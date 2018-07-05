@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "asyncio-pool"
+version = "0.1.0"
+description = """
+AsyncioPool is a thin wrapper around basic Python asyncio that allows you \
+o use async functions just like you would use threads or processes.\
+"""
+authors = ["Reginald Johnson <reginald.johnson+github@outlook.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.5.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^3.6"
+pytest-asyncio = "^0.8.0"
