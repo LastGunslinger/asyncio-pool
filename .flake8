@@ -1,0 +1,9 @@
+[flake8]
+ignore = E402
+max-line-length = 120
+exclude =
+    .venv,
+    .git,
+    __pychache__,
+    dist,
+    build

@@ -1,7 +1,7 @@
 import asyncio
 from multiprocessing import cpu_count
 from asyncio import AbstractEventLoop
-from typing import Awaitable, Callable, Optional, Tuple
+from typing import Awaitable, Callable, Iterable, Optional, Tuple
 from .exc import EventLoopStoppedError
 
 
@@ -18,38 +18,63 @@ class AsyncPoolExecutor():
         """
         self.event_loop = loop or asyncio.get_event_loop()
         if not self.event_loop.is_running():
-            raise EventLoopStoppedError('AsyncPoolExecutor can only be used in the context of a running asyncio event loop')
+            raise EventLoopStoppedError('AsyncPoolExecutor can only be used in the context of a running event loop')
         self.semaphore = asyncio.BoundedSemaphore(max_workers or cpu_count() * 5)
         self.name_prefix = coro_name_prefix
         self.initializer = initializer
         self.initargs = initargs
-        self.tasks = []
+        self.pending_tasks = []
+        self.completed_tasks = []
+        self.errors = []
 
-    def submit(self, *coros: Awaitable) -> Awaitable:
-        current_task_count = len(self.tasks)
-        for coro in coros:
-            coro = self._wrap_in_semaphore(coro)
-            self.tasks.append(asyncio.ensure_future(coro))
-        return self.tasks[current_task_count:]
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return await self.wait()
+
+    def submit(self, coro: Awaitable) -> Awaitable:
+        """Add a subroutine to the pool"""
+        coro = self._wrap_in_semaphore(coro)
+        task = asyncio.ensure_future(coro)
+        self.pending_tasks.append(task)
+        return task
+
+    def map(self, func: Awaitable, *iterables: Iterable):
+        for args in zip(*iterables):
+            coro = self._wrap_in_semaphore(func(*args))
+            self.submit(coro)
+
+    async def shutdown(self, wait: bool=True):
+        if wait:
+            await self.wait()
+        else:
+            self.pending_tasks = [asyncio.sleep(0.0)]
+
+    async def wait(self) -> Tuple[list]:
+        done, _ = await asyncio.wait(self.pending_tasks, return_when=asyncio.FIRST_EXCEPTION)
+        for fut in done:
+            self.pending_tasks.remove(fut)
+            try:
+                self.completed_tasks.append(await fut)
+            except Exception as exc:
+                self.errors.append(exc)
+                raise
+        return self.completed_tasks
 
     def started(self) -> bool:
-        if self.tasks:
+        if self.pending_tasks or self.completed_tasks:
             return True
         else:
             return False
 
     async def done(self) -> bool:
-        if not self.tasks:
+        if not self.started():
             raise Exception('No tasks have been started.')
-        done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
-        if pending:
+        elif self.pending_tasks:
             return False
         else:
             return True
-
-    async def wait(self) -> Tuple[list]:
-        done, pending = await asyncio.wait(self.tasks)
-        return done, pending
 
     async def reset(self) -> None:
         if self.tasks:
@@ -57,7 +82,12 @@ class AsyncPoolExecutor():
         self.tasks = []
 
     def _wrap_in_semaphore(self, coro: Awaitable) -> Awaitable:
+        """Wrap the given coroutine in a semaphore context"""
         async def wrapper(coro: Awaitable):
             async with self.semaphore:
+                if asyncio.iscoroutinefunction(self.initializer):
+                    await self.initializer(*self.initargs)
+                else:
+                    self.initializer(*self.initargs)
                 return await coro
         return wrapper(coro)
