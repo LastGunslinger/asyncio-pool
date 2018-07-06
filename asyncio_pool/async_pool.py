@@ -60,7 +60,7 @@ class AsyncPoolExecutor():
         """Wait for all pending tasks to complete"""
         if not self.pending_tasks:
             return self.completed_tasks, self.pending_tasks
-        done, _ = await asyncio.wait(self.pending_tasks, loop=self.loop, timeout=timeout, return_when=return_when)
+        done, _ = await asyncio.wait(self.pending_tasks, loop=self.event_loop, timeout=timeout, return_when=return_when)
         for fut in done:
             self.pending_tasks.remove(fut)
             try:
