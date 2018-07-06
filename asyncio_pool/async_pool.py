@@ -1,7 +1,8 @@
 import asyncio
-from multiprocessing import cpu_count
 from asyncio import AbstractEventLoop
-from typing import Awaitable, Callable, Iterable, Optional, Tuple
+from multiprocessing import cpu_count
+from typing import Any, Awaitable, Callable, Iterable, List, Optional, Tuple
+
 from .exc import EventLoopStoppedError
 
 
@@ -34,25 +35,32 @@ class AsyncPoolExecutor():
         return await self.wait()
 
     def submit(self, coro: Awaitable) -> Awaitable:
-        """Add a subroutine to the pool"""
+        """Add a coroutine to the pool to be run in the background"""
         coro = self._wrap_in_semaphore(coro)
         task = asyncio.ensure_future(coro)
         self.pending_tasks.append(task)
         return task
 
-    def map(self, func: Awaitable, *iterables: Iterable):
+    def map(self, func: Awaitable, *iterables: Iterable) -> List[Awaitable]:
+        """Map the values in iterables to a function and add to the pool"""
+        tasks = []
         for args in zip(*iterables):
             coro = self._wrap_in_semaphore(func(*args))
-            self.submit(coro)
+            tasks.append(self.submit(coro))
+        return tasks
 
-    async def shutdown(self, wait: bool=True):
+    async def shutdown(self, wait: bool=True) -> None:
+        """Shutdown the pool and clear all pending tasks"""
         if wait:
             await self.wait()
         else:
-            self.pending_tasks = [asyncio.sleep(0.0)]
+            self.pending_tasks = [asyncio.sleep(0.0001)]
 
-    async def wait(self) -> Tuple[list]:
-        done, _ = await asyncio.wait(self.pending_tasks, return_when=asyncio.FIRST_EXCEPTION)
+    async def wait(self, timeout=None, return_when: str=asyncio.FIRST_EXCEPTION) -> Tuple[Any]:
+        """Wait for all pending tasks to complete"""
+        if not self.pending_tasks:
+            return self.completed_tasks, self.pending_tasks
+        done, _ = await asyncio.wait(self.pending_tasks, loop=self.loop, timeout=timeout, return_when=return_when)
         for fut in done:
             self.pending_tasks.remove(fut)
             try:
@@ -60,32 +68,41 @@ class AsyncPoolExecutor():
             except Exception as exc:
                 self.errors.append(exc)
                 raise
-        return self.completed_tasks
+        return self.completed_tasks, self.pending_tasks
 
     def started(self) -> bool:
+        """Check whether any tasks have been added to the pool yet"""
         if self.pending_tasks or self.completed_tasks:
             return True
         else:
             return False
 
-    async def done(self) -> bool:
+    async def done(self, timeout: Optional[float]=None) -> bool:
+        """Check whether all tasks have been completed"""
         if not self.started():
-            raise Exception('No tasks have been started.')
-        elif self.pending_tasks:
+            return False
+        elif self.completed_tasks and not self.pending_tasks:
+            return True
+
+        try:
+            done, pending = await self.wait(
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.TimeoutError:
+            raise
+        if pending:
             return False
         else:
             return True
-
-    async def reset(self) -> None:
-        if self.tasks:
-            await self.wait()
-        self.tasks = []
 
     def _wrap_in_semaphore(self, coro: Awaitable) -> Awaitable:
         """Wrap the given coroutine in a semaphore context"""
         async def wrapper(coro: Awaitable):
             async with self.semaphore:
-                if asyncio.iscoroutinefunction(self.initializer):
+                if not self.initializer:
+                    pass
+                elif asyncio.iscoroutinefunction(self.initializer):
                     await self.initializer(*self.initargs)
                 else:
                     self.initializer(*self.initargs)
