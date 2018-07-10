@@ -45,8 +45,7 @@ class AsyncPoolExecutor():
         """Map the values in iterables to a function and add to the pool"""
         tasks = []
         for args in zip(*iterables):
-            coro = self._wrap_in_semaphore(func(*args))
-            tasks.append(self.submit(coro))
+            tasks.append(self.submit(func(*args)))
         return tasks
 
     async def shutdown(self, wait: bool=True) -> None:
